@@ -1,29 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Sale, Product, Store, User, UserRole, Customer, Expense } from '../types';
+import { Sale, Product, Store, User, Customer, Expense } from '../types';
 import { 
-  ShoppingCart, 
-  Search, 
-  User as UserIcon, 
-  Hash, 
-  DollarSign, 
-  Trash2, 
-  X,
-  ArrowRight,
-  ScanLine,
-  CameraOff,
-  Check,
-  History,
-  LayoutDashboard,
-  TrendingUp,
-  Printer,
-  Download,
-  CreditCard,
-  ChevronLeft,
-  ChevronRight,
-  RotateCcw,
-  AlertOctagon,
-  Zap,
-  ChevronDown
+  ShoppingCart, Search, User as UserIcon, Hash, DollarSign, Trash2, X,
+  ArrowRight, ScanLine, CameraOff, Check, History, LayoutDashboard,
+  TrendingUp, Printer, Download, CreditCard, ChevronLeft, ChevronRight,
+  RotateCcw, AlertOctagon, Zap, ChevronDown, CheckCircle2, Keyboard, Package, FileText
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -43,19 +24,16 @@ interface SalesProps {
   canDelete: boolean;
 }
 
+interface CartItem {
+  cartId: string;
+  product: Product;
+  quantity: number;
+  unitPrice: number;
+}
+
 const Sales: React.FC<SalesProps> = ({ 
-  sales, 
-  products, 
-  customers,
-  expenses,
-  currentStore, 
-  currentUser, 
-  onAddSale, 
-  onUpdateSale,
-  onUpdateStock,
-  onUpdateCustomerDue,
-  onDeleteSale,
-  canDelete
+  sales, products, customers, expenses, currentStore, currentUser, 
+  onAddSale, onUpdateSale, onUpdateStock, onUpdateCustomerDue, onDeleteSale, canDelete
 }) => {
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -72,25 +50,25 @@ const Sales: React.FC<SalesProps> = ({
   const [isScanning, setIsScanning] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
   const scannerRef = useRef<any>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const [skuId, setSkuId] = useState('');
-  const [matchedProduct, setMatchedProduct] = useState<Product | null>(null);
+  const [productSearchTerm, setProductSearchTerm] = useState('');
+  const [productSearchResults, setProductSearchResults] = useState<Product[]>([]);
+
+  // Cart & Checkout States
+  const [cart, setCart] = useState<CartItem[]>([]);
   const [customerId, setCustomerId] = useState('');
-  const [customerName, setCustomerName] = useState('');
-  const [quantity, setQuantity] = useState(1);
-  const [unitPrice, setUnitPrice] = useState(0);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+  const [isCustomerDropdownOpen, setIsCustomerDropdownOpen] = useState(false);
+
   const [discount, setDiscount] = useState(0);
-  const [amountPaid, setAmountPaid] = useState(0);
+  const [amountPaid, setAmountPaid] = useState<string>(''); 
   const [paymentMethod, setPaymentMethod] = useState<string>('Cash'); 
   const [invoiceId, setInvoiceId] = useState('');
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [selectedInvoiceForPrint, setSelectedInvoiceForPrint] = useState<string | null>(null);
-
-  const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
-  const [saleToReturn, setSaleToReturn] = useState<Sale | null>(null);
-  const [returnQty, setReturnQty] = useState(1);
 
   useEffect(() => {
     if (isSessionActive && !invoiceId) {
@@ -102,9 +80,32 @@ const Sales: React.FC<SalesProps> = ({
 
   useEffect(() => setCurrentPage(1), [searchTerm, filterDate]);
 
-  const resetEntryForm = () => {
-    setSkuId(''); setMatchedProduct(null); setQuantity(1); setUnitPrice(0); setDiscount(0); setAmountPaid(0); setScannerError(null); setPaymentMethod('Cash');
-  };
+  useEffect(() => {
+    if (productSearchTerm.trim() === '') {
+      setProductSearchResults([]);
+      return;
+    }
+    const lowerTerm = productSearchTerm.toLowerCase();
+    const results = products.filter(p => 
+      p.storeId === currentStore.id && 
+      (
+        p.sku.toLowerCase().includes(lowerTerm) || 
+        p.name.toLowerCase().includes(lowerTerm)
+      )
+    );
+    setProductSearchResults(results);
+  }, [productSearchTerm, products, currentStore.id]);
+
+  const filteredCustomers = useMemo(() => {
+    const lowerTerm = customerSearchTerm.toLowerCase();
+    return customers.filter(c => 
+      c.storeId === currentStore.id && 
+      (
+        c.name.toLowerCase().includes(lowerTerm) || 
+        (c.phone && c.phone.includes(lowerTerm))
+      )
+    );
+  }, [customers, currentStore.id, customerSearchTerm]);
 
   const safeStopScanner = async () => {
     if (scannerRef.current) {
@@ -122,7 +123,16 @@ const Sales: React.FC<SalesProps> = ({
         const html5QrCode = new (window as any).Html5Qrcode("sales-scanner-reader");
         scannerRef.current = html5QrCode;
         const config = { fps: 15, qrbox: { width: 250, height: 250 } };
-        const onScanSuccess = (decodedText: string) => { handleSkuLookup(decodedText, true); setIsScanning(false); safeStopScanner(); };
+        const onScanSuccess = (decodedText: string) => { 
+            const product = products.find(p => p.sku === decodedText && p.storeId === currentStore.id);
+            if (product) {
+                processAddToCart(product);
+            } else {
+                setScannerError(`Product not found: ${decodedText}`);
+            }
+            setIsScanning(false); 
+            safeStopScanner(); 
+        };
         try { await html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, () => {}); } 
         catch (err1) {
           try { await html5QrCode.start({ facingMode: "user" }, config, onScanSuccess, () => {}); } 
@@ -136,131 +146,133 @@ const Sales: React.FC<SalesProps> = ({
     }, 350);
   };
 
-  const handleSkuLookup = (sku: string, isFromScanner: boolean = false) => {
-    setSkuId(sku); if (!sku) { setMatchedProduct(null); return; }
-    const product = products.find(p => p.sku === sku && p.storeId === currentStore.id);
-    if (product) { setMatchedProduct(product); setUnitPrice(product.price); } 
-    else {
-      setMatchedProduct(null);
-      if (isFromScanner) { alert('Product not registered!'); setSkuId(''); }
-      if (sku.length >= 8) {
-        const timer = setTimeout(() => { if (!products.find(p => p.sku === sku && p.storeId === currentStore.id) && sku === skuId) { alert('Product not registered!'); setSkuId(''); } }, 1500);
-        return () => clearTimeout(timer);
+  const processAddToCart = (product: Product) => {
+    const existing = cart.find(c => c.product.id === product.id);
+    if (existing) {
+       setCart(cart.map(c => c.product.id === product.id ? {...c, quantity: c.quantity + 1} : c));
+    } else {
+       setCart([...cart, { 
+           cartId: Math.random().toString(), 
+           product, 
+           quantity: 1, 
+           unitPrice: product.price 
+       }]);
+    }
+    setProductSearchTerm(''); 
+    if(searchInputRef.current) searchInputRef.current.focus();
+  };
+
+  const handleProductSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const exactMatch = products.find(p => p.sku.toLowerCase() === productSearchTerm.trim().toLowerCase() && p.storeId === currentStore.id);
+      
+      if (exactMatch) {
+        processAddToCart(exactMatch);
+      } else if (productSearchResults.length === 1) {
+        processAddToCart(productSearchResults[0]);
       }
     }
   };
 
-  const totalAmount = useMemo(() => (quantity * unitPrice) * (1 - (discount / 100)), [quantity, unitPrice, discount]);
+  const handleCartQtyChange = (cartId: string, qty: number) => {
+    if (qty < 0.01 || isNaN(qty)) return;
+    setCart(cart.map(c => c.cartId === cartId ? { ...c, quantity: qty } : c));
+  };
 
-  const processSale = (isQuotation: boolean = false) => {
-    if (!matchedProduct) return;
-    if (!isQuotation && quantity > matchedProduct.quantity) return alert(`Error: Insufficient stock! Only ${matchedProduct.quantity} left.`);
+  const handleCartPriceChange = (cartId: string, price: number) => {
+    if (price < 0 || isNaN(price)) return;
+    setCart(cart.map(c => c.cartId === cartId ? { ...c, unitPrice: price } : c));
+  };
 
-    const isCashSale = !customerId || customerId === '';
-    const finalAmountPaid = isQuotation ? 0 : (isCashSale ? totalAmount : amountPaid);
-    const currentDue = isQuotation ? 0 : (isCashSale ? 0 : Math.max(0, totalAmount - finalAmountPaid));
+  const removeFromCart = (cartId: string) => {
+    setCart(cart.filter(c => c.cartId !== cartId));
+  };
+
+  const cartSubtotal = cart.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+  const cartTotalAfterDiscount = cartSubtotal * (1 - (discount / 100));
+  const isWalkIn = !customerId;
+  const finalAmountPaid = isWalkIn ? cartTotalAfterDiscount : (parseFloat(amountPaid) || 0);
+  const cartDue = Math.max(0, cartTotalAfterDiscount - finalAmountPaid);
+
+  const handleConfirmSale = (isQuotation: boolean = false) => {
+    if (cart.length === 0) return alert('Cart is empty. Please add items to sell.');
     
-    onAddSale({
-      invoiceId: isQuotation ? `EST-${invoiceId.replace('INV-', '')}` : invoiceId,
-      isQuotation,
-      customerId: isCashSale ? (null as unknown as string) : customerId,
-      customerName: isCashSale ? 'Cash Sale (Walk-in)' : (customerName || 'Walk-in Customer'),
-      productId: matchedProduct.id,
-      productName: matchedProduct.name,
-      quantity,
-      buyingPrice: matchedProduct.buyingPrice,
-      unitPrice,
-      discount,
-      totalPrice: totalAmount,
-      amountPaid: finalAmountPaid,
-      amountDue: currentDue,
-      paymentMethod: paymentMethod, 
-      storeId: currentStore.id
-    });
-
     if (!isQuotation) {
-      onUpdateStock(matchedProduct.id, { quantity: matchedProduct.quantity - quantity });
-      if (!isCashSale && currentDue > 0) onUpdateCustomerDue(customerId, currentDue);
+      if (finalAmountPaid < cartTotalAfterDiscount && isWalkIn) {
+         return alert('Walk-in customers cannot have dues. Please select a customer for credit sales.');
+      }
+      if (finalAmountPaid > cartTotalAfterDiscount) {
+         return alert('Amount paid cannot exceed the total cart value.');
+      }
+
+      for (const item of cart) {
+          if (item.quantity > item.product.quantity) {
+              return alert(`Not enough stock for ${item.product.name}. Available: ${item.product.quantity} Units.`);
+          }
+      }
     }
+
+    let remainingPaid = isQuotation ? 0 : finalAmountPaid;
     
-    setShowSuccessToast(true); setTimeout(() => setShowSuccessToast(false), 1500); resetEntryForm();
-  };
+    cart.forEach(item => {
+       const itemTotal = item.quantity * item.unitPrice * (1 - (discount / 100));
+       const itemPaid = isQuotation ? 0 : Math.min(itemTotal, remainingPaid);
+       const itemDue = isQuotation ? 0 : (itemTotal - itemPaid);
+       if(!isQuotation) remainingPaid -= itemPaid;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    processSale(false);
-  };
+       onAddSale({
+          invoiceId: isQuotation ? `EST-${invoiceId.replace('INV-', '')}` : invoiceId,
+          customerId: isWalkIn ? (null as unknown as string) : customerId,
+          customerName: isWalkIn ? 'Cash Sale (Walk-in)' : (customers.find(c => c.id === customerId)?.name || 'Walk-in Customer'),
+          productId: item.product.id,
+          productName: item.product.name,
+          quantity: item.quantity, 
+          buyingPrice: item.product.buyingPrice,
+          unitPrice: item.unitPrice, 
+          discount: discount,
+          totalPrice: itemTotal,
+          amountPaid: itemPaid,
+          amountDue: itemDue,
+          paymentMethod: paymentMethod, 
+          storeId: currentStore.id
+       });
 
-  const getReturnableQty = (sale: Sale) => {
-    if (!sale) return 0;
-    const returns = sales.filter(s => s.invoiceId === `RET-${sale.invoiceId}` && s.productId === sale.productId);
-    return sale.quantity - returns.reduce((acc, curr) => acc + Math.abs(curr.quantity), 0);
-  };
-
-  const handleOpenReturn = (sale: Sale) => {
-    const maxQty = getReturnableQty(sale);
-    if (maxQty <= 0) return alert('All items returned.');
-    setSaleToReturn(sale); setReturnQty(1); setIsReturnModalOpen(true);
-  };
-
-  const handleReturnSubmit = (e: React.FormEvent) => {
-    e.preventDefault(); if (!saleToReturn) return;
-    const maxQty = getReturnableQty(saleToReturn);
-    if (returnQty <= 0 || returnQty > maxQty) return alert(`Invalid quantity. Max: ${maxQty}.`);
-
-    const refundAmount = returnQty * (saleToReturn.totalPrice / saleToReturn.quantity);
-    let cashRefund = 0, dueAdjustment = 0;
-
-    if (saleToReturn.customerId) {
-        const customer = customers.find(c => c.id === saleToReturn.customerId);
-        const currentDue = customer ? customer.totalDue : 0;
-        if (currentDue > 0) {
-            if (refundAmount >= currentDue) { dueAdjustment = currentDue; cashRefund = refundAmount - currentDue; } 
-            else { dueAdjustment = refundAmount; cashRefund = 0; }
-        } else cashRefund = refundAmount;
-    } else cashRefund = refundAmount; 
-
-    onAddSale({
-        invoiceId: `RET-${saleToReturn.invoiceId}`,
-        customerId: saleToReturn.customerId,
-        customerName: saleToReturn.customerName,
-        productId: saleToReturn.productId,
-        productName: `[RETURN] ${saleToReturn.productName}`,
-        quantity: -returnQty,
-        buyingPrice: saleToReturn.buyingPrice,
-        unitPrice: saleToReturn.unitPrice,
-        discount: saleToReturn.discount,
-        totalPrice: -refundAmount,
-        amountPaid: -cashRefund,
-        amountDue: -dueAdjustment,
-        paymentMethod: saleToReturn.paymentMethod,
-        storeId: currentStore.id
+       if (!isQuotation) {
+         onUpdateStock(item.product.id, { quantity: item.product.quantity - item.quantity });
+       }
     });
 
-    const product = products.find(p => p.id === saleToReturn.productId);
-    if (product) onUpdateStock(product.id, { quantity: product.quantity + returnQty });
-    if (dueAdjustment > 0 && saleToReturn.customerId) onUpdateCustomerDue(saleToReturn.customerId, -dueAdjustment);
-
-    alert(`Return processed!\nRestored: +${returnQty}\nDue Adjusted: $${dueAdjustment.toFixed(2)}\nCash Refund: $${cashRefund.toFixed(2)}`);
-    setIsReturnModalOpen(false); setSaleToReturn(null);
-  };
-
-  const handleLedgerQuantityChange = (sale: Sale, newQty: number) => {
-    if (isNaN(newQty) || newQty < 0.01) return;
-    const product = products.find(p => p.id === sale.productId);
-    if (!product) return;
-    const diff = sale.quantity - newQty;
-    if (!sale.isQuotation && diff < 0 && product.quantity < Math.abs(diff)) return alert("Insufficient inventory.");
-    
-    onUpdateSale(sale.id, { quantity: newQty, totalPrice: newQty * (sale.totalPrice / sale.quantity) });
-    if (!sale.isQuotation) {
-      onUpdateStock(product.id, { quantity: product.quantity + diff });
+    if (!isWalkIn && cartDue > 0 && !isQuotation) {
+       onUpdateCustomerDue(customerId, cartDue);
     }
+    
+    setShowSuccessToast(true); 
+    setTimeout(() => setShowSuccessToast(false), 2000); 
+    
+    setCart([]);
+    setCustomerId('');
+    setCustomerSearchTerm('');
+    setDiscount(0);
+    setAmountPaid('');
+    setPaymentMethod('Cash');
+    setInvoiceId(`INV-${new Date().getFullYear()}-${String(sales.length + cart.length + 1).padStart(3, '0')}`);
   };
 
-  const handleLedgerTotalChange = (sale: Sale, newTotal: number) => {
-    if (isNaN(newTotal) || newTotal < 0) return;
-    onUpdateSale(sale.id, { totalPrice: newTotal, unitPrice: newTotal / sale.quantity });
+  const handleRemoveFromLedger = (saleToRemove: Sale) => {
+    if (!saleToRemove.invoiceId.startsWith('EST-')) {
+      const product = products.find(p => p.id === saleToRemove.productId);
+      if (product) {
+        onUpdateStock(product.id, { quantity: product.quantity + saleToRemove.quantity });
+      }
+      if (saleToRemove.customerId && saleToRemove.amountDue > 0) {
+        onUpdateCustomerDue(saleToRemove.customerId, -saleToRemove.amountDue);
+      }
+    }
+    onUpdateSale(saleToRemove.id, { amountPaid: 0, amountDue: 0 });
+    setTimeout(() => {
+      onDeleteSale(saleToRemove.id);
+    }, 50);
   };
 
   const sessionSales = useMemo(() => sales.filter(s => s.invoiceId === invoiceId && s.storeId === currentStore.id), [sales, invoiceId, currentStore.id]);
@@ -274,7 +286,7 @@ const Sales: React.FC<SalesProps> = ({
       return d.getDate() === todayDate.getDate() && d.getMonth() === todayDate.getMonth() && d.getFullYear() === todayDate.getFullYear();
     };
 
-    const todaySales = sales.filter(s => s.storeId === currentStore.id && isToday(s.timestamp) && !s.invoiceId?.startsWith('VOID-') && !s.isQuotation);
+    const todaySales = sales.filter(s => s.storeId === currentStore.id && isToday(s.timestamp) && !s.invoiceId?.startsWith('VOID-') && !s.invoiceId?.startsWith('EST-'));
     const todayExpenses = expenses.filter(e => e.storeId === currentStore.id && isToday(e.timestamp));
     
     let totalSales = 0, todayCash = 0, todayCard = 0, todayBkash = 0, todayNagad = 0, totalProfit = 0, totalExpense = 0, wastageLoss = 0;
@@ -304,13 +316,13 @@ const Sales: React.FC<SalesProps> = ({
   }, [sales, products, expenses, currentStore.id]);
 
   const exportToCSV = () => {
-    const headers = ['Invoice', 'Customer', 'Product', 'Qty', 'Unit Price', 'Discount', 'Total', 'Paid', 'Due', 'Payment Method', 'Date', 'Type'];
+    const headers = ['Invoice', 'Customer', 'Product', 'Qty', 'Unit Price', 'Discount', 'Total', 'Paid', 'Due', 'Payment Method', 'Date'];
     const data = sales
       .filter(s => s.storeId === currentStore.id)
       .map(saleRecord => {
         const isPayment = saleRecord.invoiceId?.startsWith('PAY-') || saleRecord.productId === 'PAYMENT_RECEIVED';
         const isVoid = saleRecord.invoiceId?.startsWith('VOID-');
-        const isQuotation = saleRecord.isQuotation;
+        const isEstimate = saleRecord.invoiceId?.startsWith('EST-');
         return [
           saleRecord.invoiceId,
           saleRecord.customerName,
@@ -322,8 +334,7 @@ const Sales: React.FC<SalesProps> = ({
           (saleRecord.amountPaid || 0).toFixed(2),
           (saleRecord.amountDue || 0).toFixed(2),
           saleRecord.paymentMethod || 'Cash',
-          new Date(saleRecord.timestamp).toLocaleDateString(),
-          isQuotation ? 'ESTIMATE' : (isVoid ? 'VOID' : 'SALE')
+          new Date(saleRecord.timestamp).toLocaleDateString()
         ];
       });
     
@@ -344,8 +355,12 @@ const Sales: React.FC<SalesProps> = ({
   if (!isSessionActive) {
     const historicalSales = sales
       .filter(s => s.storeId === currentStore.id)
-      .filter(s => (s.customerName.toLowerCase().includes(searchTerm.toLowerCase()) || s.invoiceId.toLowerCase().includes(searchTerm.toLowerCase()) || s.productName.toLowerCase().includes(searchTerm.toLowerCase())) && (!filterDate || s.timestamp.startsWith(filterDate)))
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()); 
+      .filter(s => (
+        (s.customerName || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+        (s.invoiceId || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+        (s.productName || '').toLowerCase().includes(searchTerm.toLowerCase())
+      ) && (!filterDate || s.timestamp?.startsWith(filterDate)))
+      .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()); 
 
     const totalPages = Math.ceil(historicalSales.length / ITEMS_PER_PAGE);
     const paginatedSales = historicalSales.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
@@ -354,13 +369,13 @@ const Sales: React.FC<SalesProps> = ({
       <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
           <div>
-            <h1 className="text-3xl font-black text-white tracking-tight">Sales Operations</h1>
-            <p className="text-slate-500 font-medium italic">General ledger for <span className="gold-gradient-text font-black">{currentStore.name}</span></p>
+            <h1 className="text-3xl font-black text-white tracking-tight">Point of Sale</h1>
+            <p className="text-slate-500 font-medium italic">Sales & checkout terminal for <span className="gold-gradient-text font-black">{currentStore.name}</span></p>
           </div>
           <div className="flex items-center gap-3">
             <button onClick={exportToCSV} className="p-4 bg-slate-900 border border-slate-800 text-slate-400 rounded-2xl hover:text-white transition-all shadow-xl"><Download className="w-5 h-5" /></button>
             <button onClick={() => setIsSessionActive(true)} className="bg-gradient-to-r from-amber-400 to-amber-600 text-slate-950 px-6 py-4 rounded-2xl font-black flex items-center gap-3 hover:scale-[1.02] transition-all shadow-xl shadow-amber-900/10 uppercase tracking-widest text-xs">
-              <ShoppingCart className="w-5 h-5 stroke-[3px]" /> Record New Sale
+              <ShoppingCart className="w-5 h-5 stroke-[3px]" /> Open Terminal
             </button>
           </div>
         </div>
@@ -409,7 +424,7 @@ const Sales: React.FC<SalesProps> = ({
             <div className="flex flex-col lg:flex-row gap-4">
               <div className="flex-1 relative group">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-amber-400 transition-colors" />
-                <input type="text" placeholder="Query invoice, customer or item..." className="w-full pl-12 pr-4 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-slate-100 focus:border-amber-400 transition-all amber-glow" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                <input type="text" placeholder="Search invoice, product or customer..." className="w-full pl-12 pr-4 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-slate-100 focus:border-amber-400 transition-all amber-glow" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
               </div>
               <div className="relative flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-2xl px-4 focus-within:border-amber-400 transition-colors">
                 <input type="date" className="bg-transparent py-4 outline-none text-xs font-bold text-slate-300 w-full" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
@@ -423,9 +438,8 @@ const Sales: React.FC<SalesProps> = ({
               <thead>
                 <tr className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800 bg-slate-900/80">
                   <th className="px-6 py-5">Date</th>
-                  <th className="px-6 py-5">Invoice</th>
-                  <th className="px-6 py-5">Customer</th>
-                  <th className="px-6 py-5">Item</th>
+                  <th className="px-6 py-5">Invoice & Customer</th>
+                  <th className="px-6 py-5">Product Issued</th>
                   <th className="px-6 py-5 text-center">Qty</th>
                   <th className="px-6 py-5 text-right">Settlement</th>
                   <th className="px-6 py-5 text-right">Actions</th>
@@ -436,43 +450,45 @@ const Sales: React.FC<SalesProps> = ({
                   const isPayment = saleRecord.invoiceId?.startsWith('PAY-') || saleRecord.productId === 'PAYMENT_RECEIVED';
                   const isVoid = saleRecord.invoiceId?.startsWith('VOID-');
                   const isReturn = saleRecord.invoiceId?.startsWith('RET-');
-                  const isQuotation = saleRecord.isQuotation;
+                  const isEstimate = saleRecord.invoiceId?.startsWith('EST-');
 
                   return (
                     <tr key={saleRecord.id} className={`group hover:bg-slate-800/40 transition-all ${isVoid ? 'opacity-50 grayscale' : ''} ${isReturn ? 'bg-orange-500/5 hover:bg-orange-500/10' : ''}`}>
-                      <td className="px-6 py-5 font-bold text-slate-400 text-xs whitespace-nowrap">{new Date(saleRecord.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                      <td className="px-6 py-5 font-black text-xs tracking-tighter">
-                        {isVoid ? <span className="text-rose-500 line-through">{saleRecord.invoiceId}</span> : 
-                         isReturn ? <span className="text-orange-400">{saleRecord.invoiceId}</span> : 
-                         isQuotation ? <span className="text-purple-400">{saleRecord.invoiceId}</span> :
-                         <span className="text-white">{saleRecord.invoiceId}</span>}
+                      <td className="px-6 py-5 font-bold text-slate-400 text-xs whitespace-nowrap">{new Date(saleRecord.timestamp || '').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                      <td className="px-6 py-5">
+                        <div className="font-black text-xs tracking-tighter mb-1">
+                          {isVoid ? <span className="text-rose-500 line-through">{saleRecord.invoiceId}</span> : 
+                           isReturn ? <span className="text-orange-400">{saleRecord.invoiceId}</span> : 
+                           isEstimate ? <span className="text-purple-400">{saleRecord.invoiceId}</span> : 
+                           <span className="text-white">{saleRecord.invoiceId}</span>}
+                        </div>
+                        <p className="text-xs text-slate-400 font-bold">{saleRecord.customerName}</p>
                       </td>
-                      <td className="px-6 py-5 text-sm font-bold text-slate-300">{saleRecord.customerName}</td>
-                      <td className="px-6 py-5 text-sm text-slate-400 flex flex-col">
+                      <td className="px-6 py-5 text-sm text-slate-300 flex flex-col">
                         {isPayment ? <span className="text-blue-400 italic font-bold">Due Collection</span> : isReturn ? <span className="text-orange-400 italic font-bold">{saleRecord.productName}</span> : saleRecord.productName}
-                        {saleRecord.paymentMethod && !isQuotation && <span className="text-[9px] uppercase tracking-widest text-emerald-400 font-black mt-1">[{saleRecord.paymentMethod}]</span>}
+                        {saleRecord.paymentMethod && !isEstimate && <span className="text-[9px] uppercase tracking-widest text-emerald-400 font-black mt-1">[{saleRecord.paymentMethod}]</span>}
                       </td>
                       <td className="px-6 py-5 text-center font-black text-white text-sm">{isPayment ? '-' : (isVoid ? '0' : saleRecord.quantity)}</td>
                       <td className="px-6 py-5 text-right font-black text-sm">
                         {isVoid ? <span className="text-rose-500 bg-rose-500/10 px-3 py-1.5 rounded-xl text-[10px] uppercase tracking-widest border border-rose-500/20">VOIDED</span> : 
                          isReturn ? <span className="text-orange-400 bg-orange-500/10 px-3 py-1.5 rounded-xl text-[10px] uppercase tracking-widest border border-orange-500/20">REFUND</span> : 
-                         isQuotation ? <span className="text-purple-400 bg-purple-500/10 px-3 py-1.5 rounded-xl text-[10px] uppercase tracking-widest border border-purple-500/20">ESTIMATE</span> : 
+                         isEstimate ? <span className="text-purple-400 bg-purple-500/10 px-3 py-1.5 rounded-xl text-[10px] uppercase tracking-widest border border-purple-500/20">ESTIMATE</span> : 
                          isPayment ? <span className="text-blue-400 bg-blue-500/10 px-3 py-1.5 rounded-xl text-[10px] uppercase tracking-widest">+ ${saleRecord.amountPaid?.toFixed(2)}</span> : 
                          <div className="text-emerald-400"><p>${saleRecord.totalPrice.toFixed(2)}</p>{saleRecord.amountDue > 0 && <p className="text-rose-400 text-[9px] uppercase tracking-tighter mt-1">Due: ${saleRecord.amountDue.toFixed(2)}</p>}</div>}
                       </td>
                       <td className="px-6 py-5 text-right">
                         <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {!isPayment && !isVoid && !isReturn && !isQuotation && (
-                            <button onClick={() => handleOpenReturn(saleRecord)} title="Return Item" className="p-2 text-slate-600 hover:text-orange-400"><RotateCcw className="w-4 h-4" /></button>
-                          )}
-                          {!isPayment && !isVoid && !isReturn && (
+                          {!isPayment && !isVoid && !isReturn && !isEstimate && (
                             <button onClick={() => handlePrint(saleRecord.invoiceId)} className="p-2 text-slate-600 hover:text-amber-400"><Printer className="w-4 h-4" /></button>
                           )}
+                          {isEstimate && (
+                            <button onClick={() => handlePrint(saleRecord.invoiceId)} className="p-2 text-slate-600 hover:text-purple-400"><Printer className="w-4 h-4" /></button>
+                          )}
                           {canDelete && !isVoid && !isReturn && (
-                            saleRecord.amountPaid > 0 && !isPayment && !isQuotation ? (
+                            saleRecord.amountPaid > 0 && !isPayment && !isEstimate ? (
                               <button title="Cannot void: Payment exists. Reverse payment first." className="p-2 text-slate-600 cursor-not-allowed opacity-50"><AlertOctagon className="w-4 h-4" /></button>
                             ) : (
-                              <button onClick={() => onDeleteSale(saleRecord.id)} className="p-2 text-slate-600 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                              <button onClick={() => handleRemoveFromLedger(saleRecord)} className="p-2 text-slate-600 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
                             )
                           )}
                         </div>
@@ -480,7 +496,7 @@ const Sales: React.FC<SalesProps> = ({
                     </tr>
                   );
                 })}
-                {paginatedSales.length === 0 && <tr><td colSpan={7} className="px-6 py-20 text-center text-slate-500 text-xs font-bold uppercase tracking-widest opacity-50">No sales records found</td></tr>}
+                {paginatedSales.length === 0 && <tr><td colSpan={6} className="px-6 py-20 text-center text-slate-500 text-xs font-bold uppercase tracking-widest opacity-50">No sales records found</td></tr>}
               </tbody>
             </table>
           </div>
@@ -496,43 +512,6 @@ const Sales: React.FC<SalesProps> = ({
             </div>
           )}
         </div>
-
-        <AnimatePresence>
-          {isReturnModalOpen && saleToReturn && (
-            <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-              <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="bg-slate-900 w-full max-w-md rounded-[2.5rem] border border-slate-800 shadow-2xl p-8 relative">
-                 <button onClick={() => setIsReturnModalOpen(false)} className="absolute top-6 right-6 text-slate-500 hover:text-white"><X className="w-6 h-6" /></button>
-                 <h2 className="text-xl font-black text-white mb-2 flex items-center gap-2"><RotateCcw className="w-5 h-5 text-orange-500"/> Return Item</h2>
-                 <p className="text-xs text-slate-400 font-bold mb-6">Original Invoice: {saleToReturn.invoiceId}</p>
-
-                 <form onSubmit={handleReturnSubmit} className="space-y-6">
-                     <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/50 mb-6">
-                         <p className="text-sm font-bold text-white mb-1">{saleToReturn.productName}</p>
-                         <p className="text-xs text-slate-400">Unit Settlement: ${(saleToReturn.totalPrice / saleToReturn.quantity).toFixed(2)} / item</p>
-                     </div>
-
-                     <div className="space-y-2">
-                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-2">Return Quantity</label>
-                         <input type="number" step="0.01" min="0.01" max={getReturnableQty(saleToReturn)} value={returnQty} onWheel={(e) => (e.target as HTMLInputElement).blur()} onFocus={e => e.target.select()} onChange={e => setReturnQty(parseFloat(e.target.value) || 1)} className="w-full px-5 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-orange-400 font-black focus:border-orange-500" />
-                         <p className="text-[10px] text-orange-500/80 font-bold text-right mr-2 mt-1">Max returnable: {getReturnableQty(saleToReturn)}</p>
-                     </div>
-
-                     <div className="bg-orange-500/10 border border-orange-500/20 p-4 rounded-2xl">
-                         <p className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-2">Refund Calculation</p>
-                         <div className="flex justify-between text-xs font-bold text-slate-300 mb-1">
-                             <span>Total Refund Value:</span><span>${(returnQty * (saleToReturn.totalPrice / saleToReturn.quantity)).toFixed(2)}</span>
-                         </div>
-                         <div className="flex justify-between text-xs font-bold text-slate-300">
-                             <span>Will Adjust Due First:</span><span className="text-emerald-400">Auto-calculated</span>
-                         </div>
-                     </div>
-
-                     <button type="submit" className="w-full bg-orange-500 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg hover:bg-orange-600 transition-colors">Confirm Return</button>
-                 </form>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
 
         <AnimatePresence>
           {showPrintModal && selectedInvoiceForPrint && (
@@ -565,11 +544,11 @@ const Sales: React.FC<SalesProps> = ({
 
                   <div className="grid grid-cols-2 gap-12 mb-12">
                     <div>
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Billed To</p>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Customer Details</p>
                       <p className="font-black text-lg">{sales.find(s => s.invoiceId === selectedInvoiceForPrint)?.customerName || 'Walk-in Customer'}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Date Issued</p>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Date</p>
                       <p className="font-black text-lg">{new Date(sales.find(s => s.invoiceId === selectedInvoiceForPrint)?.timestamp || '').toLocaleDateString()}</p>
                     </div>
                   </div>
@@ -577,7 +556,7 @@ const Sales: React.FC<SalesProps> = ({
                   <table className="w-full mb-12">
                     <thead>
                       <tr className="border-b-2 border-slate-950 text-[10px] font-black uppercase tracking-widest">
-                        <th className="py-4 text-left">Description</th><th className="py-4 text-center">Qty</th><th className="py-4 text-right">Unit</th><th className="py-4 text-right">Total</th>
+                        <th className="py-4 text-left">Description</th><th className="py-4 text-center">Qty</th><th className="py-4 text-right">Unit Price</th><th className="py-4 text-right">Total</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -605,7 +584,7 @@ const Sales: React.FC<SalesProps> = ({
                   </div>
 
                   <div className="mt-20 pt-12 border-t border-slate-100 text-center">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Thank you for your business</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Thank you for shopping with us. Visit again!</p>
                   </div>
                 </div>
               </motion.div>
@@ -626,23 +605,68 @@ const Sales: React.FC<SalesProps> = ({
 
   return (
     <div className="h-[calc(100vh-140px)] flex flex-col lg:flex-row gap-8 animate-in fade-in zoom-in-95 duration-500 overflow-hidden">
-      <div className="lg:w-[450px] flex flex-col bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8 overflow-y-auto custom-scrollbar relative">
+      
+      {/* LEFT COLUMN: SEARCH & SCANNER */}
+      <div className="lg:w-[400px] flex flex-col bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8 overflow-y-auto custom-scrollbar relative">
         <div className="mb-6 flex items-center justify-between">
-          <div><h2 className="text-xl font-black text-white tracking-tight uppercase">New Sale Session</h2><p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">{invoiceId}</p></div>
-          <div className="flex items-center gap-2 px-3 py-1 bg-amber-400/10 border border-amber-400/20 rounded-full"><div className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" /><span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Active Entry</span></div>
+          <div>
+            <h2 className="text-xl font-black text-white tracking-tight uppercase">Product Search</h2>
+            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Scan or Type Name</p>
+          </div>
         </div>
 
         {showSuccessToast && (
-          <div className="mb-6 bg-emerald-500/20 border border-emerald-500/30 p-4 rounded-2xl flex items-center gap-3 text-emerald-400 animate-in slide-in-from-top-2"><Check className="w-5 h-5" /><p className="text-xs font-black uppercase tracking-widest">Confirmed. Form blanked for next SKU.</p></div>
+          <div className="mb-6 bg-emerald-500/20 border border-emerald-500/30 p-4 rounded-2xl flex items-center gap-3 text-emerald-400 animate-in slide-in-from-top-2">
+            <Check className="w-5 h-5" />
+            <p className="text-xs font-black uppercase tracking-widest">Task Completed Successfully!</p>
+          </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-6 flex-1">
+        <div className="space-y-6">
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-amber-500 uppercase tracking-[0.2em] ml-2">sku identifier</label>
-            <div className="relative group">
-              <ScanLine className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-amber-400 transition-colors" />
-              <input required value={skuId} autoFocus onChange={e => handleSkuLookup(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} placeholder="Search SKU..." className={`w-full pl-12 pr-14 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-slate-100 font-bold focus:border-amber-400 amber-glow ${matchedProduct ? 'bg-slate-800/50 border-amber-400/30' : ''}`} />
-              {!isScanning && <button type="button" onClick={startScanner} className="absolute right-4 top-1/2 -translate-y-1/2 p-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-400 hover:text-amber-400 transition-all"><ScanLine className="w-5 h-5" /></button>}
+            <div className="relative z-[100] group">
+              <div className="absolute inset-y-0 left-0 pl-5 flex items-center pointer-events-none">
+                 <Keyboard className="w-5 h-5 text-slate-500 group-focus-within:text-amber-400 transition-colors" />
+              </div>
+              <input 
+                ref={searchInputRef}
+                type="text"
+                value={productSearchTerm} 
+                autoFocus 
+                onChange={e => setProductSearchTerm(e.target.value)} 
+                onKeyDown={handleProductSearchKeyDown} 
+                placeholder="Product Name or SKU..." 
+                className="w-full bg-slate-800 border-2 border-slate-700 text-white rounded-[2rem] py-5 pl-14 pr-16 focus:outline-none transition-all shadow-lg text-lg font-bold focus:border-amber-400 amber-glow" 
+              />
+              {!isScanning && (
+                <button type="button" onClick={startScanner} className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-slate-900 rounded-xl text-slate-400 hover:text-amber-400 transition-all">
+                  <ScanLine className="w-5 h-5" />
+                </button>
+              )}
+
+              {productSearchResults.length > 0 && (
+                <div className="absolute w-full mt-2 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl max-h-60 overflow-y-auto custom-scrollbar">
+                  {productSearchResults.map(product => (
+                     <button
+                        key={product.id}
+                        type="button"
+                        className="w-full text-left px-5 py-4 hover:bg-slate-700 border-b border-slate-700/50 flex flex-col transition-colors hover:border-l-4 hover:border-l-amber-400"
+                        onClick={() => processAddToCart(product)}
+                     >
+                        <div className="flex justify-between items-start w-full">
+                           <div>
+                              <p className="text-white font-bold text-sm">{product.name}</p>
+                              <p className="text-[10px] text-slate-400 font-mono tracking-wider">SKU: {product.sku}</p>
+                           </div>
+                           <div className="text-right">
+                              <p className="font-bold text-sm text-amber-400">৳{product.price}</p>
+                              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Stock: {product.quantity}</p>
+                           </div>
+                        </div>
+                     </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -656,130 +680,254 @@ const Sales: React.FC<SalesProps> = ({
             </div>
           )}
 
-          {scannerError && <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-2xl flex items-center gap-3 text-rose-400 text-xs font-bold"><CameraOff className="w-4 h-4" /><p>{scannerError}</p></div>}
-
-          {matchedProduct && (
-            <div className="grid grid-cols-1 gap-4 animate-in slide-in-from-top-2">
-              <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">Name</label><div className="w-full px-5 py-3.5 bg-slate-800/50 border border-slate-800 rounded-xl text-slate-400 font-bold text-xs truncate select-none italic">{matchedProduct.name}</div></div>
-              <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">Category</label><div className="w-full px-5 py-3.5 bg-slate-800/50 border border-slate-800 rounded-xl text-slate-400 font-bold text-xs select-none italic">{matchedProduct.category}</div></div>
+          {scannerError && (
+            <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-2xl flex items-center gap-3 text-rose-400 text-xs font-bold">
+              <CameraOff className="w-4 h-4" />
+              <p>{scannerError}</p>
             </div>
           )}
 
-          <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">Customer Profile</label>
-            <div className="relative group">
-              <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-amber-400 transition-colors" />
-              <select value={customerId} onChange={e => { const cust = customers.find(c => c.id === e.target.value); setCustomerId(e.target.value); setCustomerName(cust ? cust.name : ''); }} className="w-full pl-12 pr-4 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-slate-100 font-bold focus:border-amber-400 appearance-none">
-                <option value="">Walk-in Customer</option>
-                {customers.filter(c => c.storeId === currentStore.id).map(c => <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>)}
-              </select>
-            </div>
+          <div className="mt-8 pt-8 border-t border-slate-800 text-center opacity-30 select-none">
+             <Package className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+             <p className="text-xs font-bold text-slate-400">Search products by name or SKU. Click an item from the dropdown to add it directly to the cart.</p>
           </div>
-
-          <div className={`grid grid-cols-2 gap-4 transition-all duration-500 ${!matchedProduct ? 'opacity-30 pointer-events-none blur-[1px]' : ''}`}>
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">volume (qty / SqFt)</label>
-              <div className="relative group">
-                <Hash className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-amber-400 transition-colors" />
-                <input required type="number" step="0.01" min="0.01" max={matchedProduct?.quantity || 1} value={quantity} onWheel={(e) => (e.target as HTMLInputElement).blur()} onFocus={e => e.target.select()} onChange={e => setQuantity(parseFloat(e.target.value) || 0)} className="w-full pl-12 pr-4 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-slate-100 font-black focus:border-amber-400 amber-glow" />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">selling price ($)</label>
-              <div className="relative group">
-                <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-amber-400 transition-colors" />
-                <input required type="number" step="0.01" value={unitPrice} onWheel={(e) => (e.target as HTMLInputElement).blur()} onFocus={e => e.target.select()} onChange={e => setUnitPrice(parseFloat(e.target.value) || 0)} className="w-full pl-12 pr-4 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-emerald-400 font-black focus:border-amber-400 amber-glow" />
-              </div>
-            </div>
-          </div>
-
-          <div className={`grid grid-cols-2 gap-4 transition-all duration-500 ${!matchedProduct ? 'opacity-30 pointer-events-none blur-[1px]' : ''}`}>
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">discount (%)</label>
-              <input type="number" min="0" max="100" value={discount} onWheel={(e) => (e.target as HTMLInputElement).blur()} onFocus={e => e.target.select()} onChange={e => setDiscount(parseFloat(e.target.value) || 0)} className="w-full px-6 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-rose-500 font-black focus:border-amber-400 amber-glow" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">Payment Method</label>
-              <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} className="w-full px-4 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none text-white font-bold focus:border-amber-400 appearance-none text-center uppercase tracking-widest text-[10px]">
-                <option value="Cash">CASH</option>
-                <option value="Card">CARD</option>
-                <option value="bKash">bKash</option>
-                <option value="Nagad">NAGAD</option>
-              </select>
-            </div>
-          </div>
-          
-          <div className={`space-y-2 transition-all duration-500 ${!matchedProduct ? 'opacity-30 pointer-events-none blur-[1px]' : ''}`}>
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">Amount Paid ($)</label>
-              <div className="relative group">
-                <CreditCard className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-amber-400 transition-colors" />
-                <input type="number" step="0.01" disabled={!customerId} value={!customerId ? totalAmount : amountPaid} onWheel={(e) => (e.target as HTMLInputElement).blur()} onFocus={e => e.target.select()} onChange={e => setAmountPaid(parseFloat(e.target.value) || 0)} className={`w-full pl-12 pr-4 py-4 rounded-2xl outline-none font-black transition-all ${!customerId ? 'bg-emerald-900/20 border border-emerald-500/30 text-emerald-500 cursor-not-allowed' : 'bg-slate-800 border border-slate-700 text-amber-400 focus:border-amber-400 amber-glow'}`} />
-              </div>
-          </div>
-
-          <div className={`bg-slate-950 p-6 rounded-3xl border border-slate-800 mt-auto ${!matchedProduct ? 'opacity-50 grayscale' : ''}`}>
-             <div className="flex justify-between items-center">
-                <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Estimated Settlement</span>
-                <span className="text-2xl font-black gold-gradient-text tracking-tighter">${totalAmount.toFixed(2)}</span>
-             </div>
-          </div>
-
-          <div className="pt-4 flex flex-col gap-3">
-            <button type="submit" disabled={!matchedProduct} className={`w-full py-5 rounded-3xl font-black shadow-2xl transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs ${matchedProduct ? 'bg-gradient-to-r from-amber-400 to-amber-600 text-slate-950 shadow-amber-900/20 hover:scale-[1.02]' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}>
-              confirm settlement <ArrowRight className="w-5 h-5" />
-            </button>
-            <button type="button" disabled={!matchedProduct} onClick={() => processSale(true)} className={`w-full py-4 rounded-3xl font-black border-2 transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs ${matchedProduct ? 'border-amber-400/50 text-amber-400 hover:bg-amber-400/10' : 'border-slate-700 text-slate-500 cursor-not-allowed'}`}>
-              Save as Estimate / Quotation
-            </button>
-            <button type="button" onClick={() => { setIsSessionActive(false); setInvoiceId(''); setCustomerName(''); resetEntryForm(); }} className="w-full py-4 bg-slate-800 border border-slate-700 text-slate-400 rounded-3xl font-black hover:text-white transition-all text-[10px] uppercase tracking-[0.2em] shadow-xl">
-              complete
-            </button>
-          </div>
-        </form>
+        </div>
       </div>
 
+      {/* RIGHT COLUMN: CART & CHECKOUT */}
       <div className="flex-1 flex flex-col bg-slate-900/50 backdrop-blur-md border border-slate-800 rounded-[2.5rem] shadow-2xl overflow-hidden">
-        <div className="p-8 border-b border-slate-800 flex items-center justify-between">
-           <div><h2 className="text-xl font-black text-white tracking-tight uppercase">Live Sales Ledger</h2><p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Active Session Tracking</p></div>
-           <div className="p-3 bg-slate-800 rounded-2xl text-amber-500 border border-slate-700 shadow-xl"><History className="w-5 h-5" /></div>
+        
+        <div className="p-6 border-b border-slate-800 flex items-center justify-between">
+           <div>
+             <h2 className="text-xl font-black text-white tracking-tight uppercase flex items-center gap-3">
+               <ShoppingCart className="text-amber-400" size={24} /> 
+               Local Cart / Order
+             </h2>
+             <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em] mt-1">{invoiceId}</p>
+           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
+        <div className="flex-1 overflow-y-auto custom-scrollbar bg-slate-900/30">
            <table className="w-full text-left">
               <thead className="sticky top-0 bg-slate-900 z-10">
                 <tr className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800">
-                  <th className="px-6 py-5">Item</th><th className="px-6 py-5 text-center">Vol (Qty)</th><th className="px-6 py-5 text-right">Settlement ($)</th>
+                  <th className="px-6 py-4">Product Details</th>
+                  <th className="px-4 py-4 text-center">Qty / SqFt</th>
+                  <th className="px-4 py-4 text-right">Unit Price</th>
+                  <th className="px-4 py-4 text-right">Total</th>
+                  <th className="px-6 py-4 text-center"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50">
-                {sessionSales.map((sessionSale) => (
-                    <tr key={sessionSale.id} className="group hover:bg-slate-800/40 transition-all animate-in slide-in-from-right-4 duration-300">
-                      <td className="px-6 py-5">
-                         <p className="font-bold text-white text-sm truncate max-w-xs">{sessionSale.productName}</p>
-                         <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter italic">{sessionSale.customerName}</p>
+                {cart.map((cartItem) => (
+                    <tr key={cartItem.cartId} className="group hover:bg-slate-800/40 transition-all animate-in slide-in-from-right-4 duration-300">
+                      <td className="px-6 py-4">
+                         <p className="font-bold text-white text-sm truncate max-w-[200px]">{cartItem.product.name}</p>
+                         <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter italic">Stock: {cartItem.product.quantity}</p>
                       </td>
-                      <td className="px-6 py-5 text-center">
-                         <input type="number" step="0.01" min="0.01" value={sessionSale.quantity} onWheel={(e) => (e.target as HTMLInputElement).blur()} onFocus={e => e.target.select()} onChange={(e) => handleLedgerQuantityChange(sessionSale, parseFloat(e.target.value))} className="w-20 bg-slate-800 border border-slate-700 rounded-xl text-center font-black text-amber-400 text-sm focus:border-amber-400 outline-none p-1.5 shadow-inner" />
+                      <td className="px-4 py-4 text-center">
+                         <input 
+                           type="number" 
+                           step="0.01"
+                           min="0.01" 
+                           value={cartItem.quantity} 
+                           onWheel={(e) => (e.target as HTMLInputElement).blur()} 
+                           onFocus={e => e.target.select()} 
+                           onChange={(e) => handleCartQtyChange(cartItem.cartId, parseFloat(e.target.value))} 
+                           className="w-20 bg-slate-800 border border-slate-700 rounded-xl text-center font-black text-amber-400 text-sm focus:border-amber-400 outline-none p-1.5 shadow-inner" 
+                         />
                       </td>
-                      <td className="px-6 py-5 text-right">
-                         <div className="flex items-center justify-end gap-1">
-                            <span className="text-emerald-400 text-xs font-bold">$</span>
-                            <input type="number" step="0.01" value={sessionSale.totalPrice} onWheel={(e) => (e.target as HTMLInputElement).blur()} onFocus={e => e.target.select()} onChange={(e) => handleLedgerTotalChange(sessionSale, parseFloat(e.target.value))} className="w-28 bg-slate-800 border border-slate-700 rounded-xl text-right font-black text-emerald-400 text-sm focus:border-emerald-400 outline-none p-1.5 shadow-inner" />
-                         </div>
+                      <td className="px-4 py-4 text-right">
+                         <input 
+                           type="number" 
+                           step="0.01" 
+                           value={cartItem.unitPrice} 
+                           onWheel={(e) => (e.target as HTMLInputElement).blur()} 
+                           onFocus={e => e.target.select()} 
+                           onChange={(e) => handleCartPriceChange(cartItem.cartId, parseFloat(e.target.value))} 
+                           className="w-24 bg-slate-800 border border-slate-700 rounded-xl text-right font-black text-emerald-400 text-sm focus:border-emerald-400 outline-none p-1.5 shadow-inner" 
+                         />
+                      </td>
+                      <td className="px-4 py-4 text-right font-black text-white">
+                         ${(cartItem.quantity * cartItem.unitPrice).toFixed(2)}
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                         <button 
+                           type="button"
+                           onClick={() => removeFromCart(cartItem.cartId)} 
+                           className="p-2 bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white rounded-xl transition-all shadow-sm"
+                           title="Remove from Cart"
+                         >
+                           <Trash2 className="w-4 h-4" />
+                         </button>
                       </td>
                     </tr>
                 ))}
-                {sessionSales.length === 0 && <tr><td colSpan={3} className="px-6 py-20 text-center opacity-30 grayscale"><LayoutDashboard className="w-12 h-12 mx-auto text-slate-600 mb-4" /><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Awaiting session confirm</p></td></tr>}
+                {cart.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-20 text-center opacity-30 grayscale">
+                      <ShoppingCart className="w-12 h-12 mx-auto text-slate-600 mb-4" />
+                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Cart is empty. Search items to begin.</p>
+                    </td>
+                  </tr>
+                )}
               </tbody>
            </table>
         </div>
         
-        <div className="p-8 bg-slate-950 border-t border-slate-800">
-           <div className="flex items-center justify-between">
-              <div><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total Turnover</p><p className="text-2xl font-black text-white">${totalTurnover.toFixed(2)}</p></div>
-              <div className="flex flex-col items-end"><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Items Settled</p><p className="text-2xl font-black text-amber-400">{sessionSales.length}</p></div>
+        <div className="p-6 bg-slate-950 border-t border-slate-800 grid grid-cols-1 md:grid-cols-12 gap-6">
+           <div className="md:col-span-8 space-y-4">
+              <div className="flex gap-4">
+                 
+                 <div className="flex-1 relative">
+                   <label className="text-[10px] text-slate-500 uppercase tracking-widest block mb-1">Customer Profile</label>
+                   <div className="relative">
+                     <input
+                        type="text"
+                        value={customerSearchTerm}
+                        onChange={e => {
+                          setCustomerSearchTerm(e.target.value);
+                          setIsCustomerDropdownOpen(true);
+                          if (e.target.value === '') setCustomerId(''); 
+                        }}
+                        onFocus={() => setIsCustomerDropdownOpen(true)}
+                        onBlur={() => setTimeout(() => setIsCustomerDropdownOpen(false), 200)}
+                        placeholder="Search name or phone..."
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm font-bold outline-none focus:border-amber-400"
+                     />
+                     
+                     <AnimatePresence>
+                       {isCustomerDropdownOpen && (
+                         <motion.div 
+                           initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}
+                           className="absolute bottom-[calc(100%+8px)] left-0 w-full bg-slate-800 border border-slate-700 rounded-xl shadow-2xl max-h-48 overflow-y-auto z-50 custom-scrollbar"
+                         >
+                           <button
+                             type="button"
+                             onClick={() => {
+                               setCustomerId('');
+                               setCustomerSearchTerm('');
+                               setIsCustomerDropdownOpen(false);
+                             }}
+                             className="w-full text-left px-4 py-3 hover:bg-slate-700 text-sm font-bold text-slate-400 border-b border-slate-700/50"
+                           >
+                             Walk-in Customer (Cash)
+                           </button>
+                           {filteredCustomers.map(c => (
+                             <button
+                               key={c.id}
+                               type="button"
+                               onClick={() => {
+                                 setCustomerId(c.id);
+                                 setCustomerSearchTerm(`${c.name} (${c.phone || 'N/A'})`);
+                                 setIsCustomerDropdownOpen(false);
+                               }}
+                               className="w-full text-left px-4 py-3 hover:bg-slate-700 text-sm font-bold text-white transition-colors border-b border-slate-700/50 flex justify-between"
+                             >
+                               <span>{c.name}</span>
+                               <span className="text-amber-400 text-xs">{c.phone}</span>
+                             </button>
+                           ))}
+                           {filteredCustomers.length === 0 && customerSearchTerm !== '' && (
+                             <div className="px-4 py-3 text-xs text-slate-500 italic">No customer found</div>
+                           )}
+                         </motion.div>
+                       )}
+                     </AnimatePresence>
+                   </div>
+                 </div>
+
+                 <div className="w-24">
+                   <label className="text-[10px] text-slate-500 uppercase tracking-widest block mb-1">Discount %</label>
+                   <input 
+                     type="number" min="0" max="100" 
+                     value={discount} 
+                     onFocus={e => e.target.select()}
+                     onChange={e => setDiscount(parseFloat(e.target.value)||0)} 
+                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-rose-400 font-black text-sm outline-none focus:border-amber-400" 
+                   />
+                 </div>
+              </div>
+              
+              <div className="flex gap-4">
+                 <div className="flex-1">
+                   <label className="text-[10px] text-slate-500 uppercase tracking-widest block mb-1">Payment Method</label>
+                   <select 
+                     value={paymentMethod} 
+                     onChange={e => setPaymentMethod(e.target.value)} 
+                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm font-bold outline-none focus:border-amber-400 uppercase"
+                   >
+                     <option value="Cash">Cash</option>
+                     <option value="Card">Card</option>
+                     <option value="bKash">bKash</option>
+                     <option value="Nagad">Nagad</option>
+                   </select>
+                 </div>
+                 <div className="flex-1">
+                   <label className="text-[10px] text-emerald-400 uppercase tracking-widest block mb-1 font-bold">Amount Paid ($)</label>
+                   <input 
+                     type="number" 
+                     disabled={!customerId} 
+                     value={!customerId ? cartTotalAfterDiscount.toFixed(2) : amountPaid} 
+                     onFocus={e => e.target.select()}
+                     onChange={e => setAmountPaid(e.target.value)} 
+                     placeholder="0.00" 
+                     className={`w-full border rounded-xl px-4 py-3 font-black text-sm outline-none transition-all ${!customerId ? 'bg-emerald-900/20 border-emerald-500/30 text-emerald-500 cursor-not-allowed' : 'bg-slate-900 border-slate-700 text-amber-400 focus:border-amber-400 amber-glow'}`} 
+                   />
+                 </div>
+              </div>
+           </div>
+           
+           <div className="md:col-span-4 flex flex-col justify-end space-y-3 text-right bg-slate-900/50 p-4 rounded-2xl border border-slate-800">
+              <div className="flex justify-between text-slate-400 text-sm">
+                <span className="uppercase tracking-widest text-[10px] font-bold">Subtotal:</span> 
+                <span className="font-bold">${cartSubtotal.toFixed(2)}</span>
+              </div>
+              {discount > 0 && (
+                <div className="flex justify-between text-rose-400 text-sm">
+                  <span className="uppercase tracking-widest text-[10px] font-bold">Discount:</span> 
+                  <span className="font-bold">-${(cartSubtotal * discount / 100).toFixed(2)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-white text-xl font-black mt-2 pt-2 border-t border-slate-800">
+                <span className="uppercase tracking-widest text-xs self-center text-slate-500">Net Total:</span> 
+                <span className="gold-gradient-text">${cartTotalAfterDiscount.toFixed(2)}</span>
+              </div>
+              {customerId && (
+                <div className="flex justify-between text-rose-400 text-sm border-t border-slate-800 pt-2">
+                  <span className="uppercase tracking-widest text-[10px] font-bold">Due Amount:</span> 
+                  <span className="font-black">${cartDue.toFixed(2)}</span>
+                </div>
+              )}
            </div>
         </div>
+
+        <div className="p-4 bg-slate-900 flex justify-end gap-3 border-t border-slate-800">
+           <button 
+             onClick={() => { 
+                setCart([]); 
+                setCustomerSearchTerm('');
+                setCustomerId('');
+                setIsSessionActive(false); 
+             }} 
+             className="px-5 py-4 bg-slate-800 border border-slate-700 text-slate-400 rounded-xl font-bold hover:text-white hover:bg-slate-700 transition-colors text-[10px] uppercase tracking-widest"
+           >
+             Close
+           </button>
+           <button 
+             onClick={() => handleConfirmSale(true)} 
+             className="px-5 py-4 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-xl font-black flex items-center gap-2 hover:bg-purple-500 hover:text-white transition-all text-[10px] uppercase tracking-widest"
+           >
+             <FileText className="w-4 h-4"/> Estimate
+           </button>
+           <button 
+             onClick={() => handleConfirmSale(false)} 
+             className="px-6 py-4 bg-emerald-500 text-slate-950 rounded-xl font-black flex items-center gap-2 hover:bg-emerald-400 transition-all shadow-xl shadow-emerald-500/20 text-[10px] uppercase tracking-widest"
+           >
+             <CheckCircle2 className="w-5 h-5"/> Confirm Sale
+           </button>
+        </div>
+
       </div>
 
       <style>{`

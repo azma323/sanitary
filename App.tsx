@@ -15,10 +15,19 @@ const Users = lazy(() => import('./components/Users'));
 const Customers = lazy(() => import('./components/Customers'));
 const Suppliers = lazy(() => import('./components/Suppliers'));
 const Purchases = lazy(() => import('./components/Purchases'));
+const Returns = lazy(() => import('./components/Returns')); // 🔴 RETURNS ADDED
 const Wastage = lazy(() => import('./components/Wastage'));
 const Scanner = lazy(() => import('./components/Scanner'));
 const Settings = lazy(() => import('./components/Settings'));
 const CashManagement = lazy(() => import('./components/CashManagement'));
+
+const generateUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => localStorage.getItem('omni_auth') === 'true');
@@ -43,7 +52,6 @@ const App: React.FC = () => {
   const [isDataLoading, setIsDataLoading] = useState(false);
   const [isInitialFetchDone, setIsInitialFetchDone] = useState(false);
 
-  // 🔴 OFFLINE SYNC ENGINE STATES
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncQueue, setSyncQueue] = useState<any[]>(() => {
@@ -63,7 +71,7 @@ const App: React.FC = () => {
 
   const [categories, setCategories] = useState<string[]>(() => {
     const saved = localStorage.getItem('omni_categories');
-    return saved ? JSON.parse(saved) : ['Electronics', 'Clothing', 'Food', 'Others'];
+    return saved ? JSON.parse(saved) : ['Hardware', 'Sanitary', 'Pipes', 'Fittings'];
   });
 
   const [expenseCategories, setExpenseCategories] = useState<string[]>(() => {
@@ -75,7 +83,6 @@ const App: React.FC = () => {
     setProducts([]); setSales([]); setExpenses([]); setCustomers([]); setSuppliers([]); setPurchases([]); setUsers([]); setCashTransactions([]);
   }, []);
 
-  // 🔴 NETWORK STATUS MONITOR
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -87,17 +94,14 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // 🔴 QUEUE MANAGER
   const addToQueue = useCallback((table: string, action: 'INSERT' | 'UPDATE' | 'DELETE', payload: any, matchQuery?: any) => {
     setSyncQueue(prev => {
       const updated = [...prev, { id: `sync-${Date.now()}-${Math.random()}`, table, action, payload, matchQuery, timestamp: Date.now() }];
       localStorage.setItem('omni_sync_queue', JSON.stringify(updated));
       return updated;
     });
-    console.log(`[Offline] Added to queue: ${action} on ${table}`);
   }, []);
 
-  // 🔴 PROCESS SYNC QUEUE
   const processSyncQueue = useCallback(async () => {
     if (!isOnline || syncQueue.length === 0 || isSyncing) return;
     setIsSyncing(true);
@@ -122,7 +126,6 @@ const App: React.FC = () => {
           if (error) throw error;
         }
       } catch (err) {
-        console.error(`[Sync Failed] Task ID: ${task.id}`, err);
         failedTasks.push(task);
       }
     }
@@ -136,13 +139,11 @@ const App: React.FC = () => {
     }
   }, [isOnline, syncQueue, isSyncing, logActivity]);
 
-  // 🔴 TRIGGER SYNC ON RECONNECT
   useEffect(() => {
     if (isOnline && syncQueue.length > 0) {
       processSyncQueue();
     }
   }, [isOnline, syncQueue.length, processSyncQueue]);
-
 
   useEffect(() => {
     if (!isAuthenticated || !currentUser) return;
@@ -254,7 +255,7 @@ const App: React.FC = () => {
   const overallBalances = useMemo(() => {
     if (!currentStore) return { cash: 0, bank: 0, card: 0, bkash: 0, nagad: 0 };
     let cash = storeInvestment, bank = 0, card = 0, bkash = 0, nagad = 0;
-    sales.filter(s => s.storeId === currentStore.id && !s.invoiceId?.startsWith('VOID-')).forEach(s => {
+    sales.filter(s => s.storeId === currentStore.id && !s.invoiceId?.startsWith('VOID-') && !(s as any).isQuotation).forEach(s => {
        const method = s.paymentMethod || 'Cash';
        const amt = Number(s.amountPaid || 0);
        if (method === 'Card') card += amt; else if (method === 'bKash') bkash += amt; else if (method === 'Nagad') nagad += amt; else cash += amt;
@@ -271,10 +272,6 @@ const App: React.FC = () => {
 
   // 🔴 OFFLINE SUPPORTED CRUD OPERATIONS
   const addSale = useCallback(async (sale: Omit<Sale, 'id' | 'timestamp'>) => {
-    if (!sale.invoiceId?.startsWith('PAY-') && sale.productId !== 'PAYMENT_RECEIVED') {
-      const product = products.find(p => p.id === sale.productId);
-      if (!product || product.quantity < sale.quantity) { Swal.fire({ icon: 'error', title: 'Action Denied', text: 'Insufficient stock!', customClass: { popup: 'rounded-3xl' } }); throw new Error("Insufficient stock"); }
-    }
     const tempId = `temp-sale-${Date.now()}`;
     const tempSale = { ...sale, id: tempId, timestamp: new Date().toISOString(), storeId: currentStore?.id || '' } as Sale;
     setSales(prev => [tempSale, ...prev]);
@@ -288,7 +285,7 @@ const App: React.FC = () => {
     } else {
       addToQueue('sales', 'INSERT', { ...tempSale });
     }
-  }, [currentStore?.id, products, isOnline, addToQueue]);
+  }, [currentStore?.id, isOnline, addToQueue]);
 
   const addProduct = useCallback(async (newProduct: Omit<Product, 'id' | 'lastUpdated'>) => { 
     const tempId = `temp-prod-${Date.now()}`;
@@ -480,10 +477,18 @@ const App: React.FC = () => {
             <Route path="/funds" element={currentUser.role !== UserRole.SALESMAN ? <CashManagement currentStore={currentStore} transactions={cashTransactions} balances={overallBalances} onAddTransaction={addCashTransaction} onDeleteTransaction={deleteCashTransaction} canEdit={checkPermission('expenses_edit')} /> : <Navigate to="/" replace />} />
 
             <Route path="/inventory" element={<Inventory products={products} suppliers={suppliers} purchases={purchases} currentStore={currentStore} currentUser={currentUser} categories={categories} sales={sales} expenses={expenses} onUpdate={updateProduct} onDelete={deleteProduct} onAdd={addProduct} onAddSale={addSale} onAddExpense={addExpense} onUpdateExpense={updateExpense} onDeleteExpense={deleteExpense} onAddCategory={handleAddCategory} onRemoveCategory={handleRemoveCategory} onUpdateSupplierDue={updateSupplierDue} onAddPurchase={addPurchase} canEditPrices={checkPermission('inventory_edit')} canDelete={checkPermission('inventory_delete')} />} />
+            
             <Route path="/sales" element={<Sales sales={sales} products={products} customers={customers} expenses={expenses} currentStore={currentStore} currentUser={currentUser} onAddSale={addSale} onUpdateSale={updateSale} onUpdateStock={updateProduct} onUpdateCustomerDue={updateCustomerDue} onDeleteSale={deleteSale} canDelete={checkPermission('sales_delete')} />} />
-            <Route path="/customers" element={<Customers customers={customers} currentStore={currentStore} onAddCustomer={addCustomer} onUpdateCustomer={updateCustomer} onDeleteCustomer={deleteCustomer} onAddSale={addSale} onUpdateCustomerDue={updateCustomerDue} canEdit={checkPermission('customers_edit')} canDelete={checkPermission('customers_delete')} />} />
-            <Route path="/suppliers" element={<Suppliers suppliers={suppliers} currentStore={currentStore} onAddSupplier={addSupplier} onUpdateSupplier={updateSupplier} onDeleteSupplier={deleteSupplier} onAddExpense={addExpense} onUpdateSupplierDue={updateSupplierDue} canEdit={checkPermission('suppliers_edit')} canDelete={checkPermission('suppliers_delete')} />} />
+            
+            {/* 🔴 NEW RETURNS ROUTE */}
+            <Route path="/returns" element={<Returns products={products} customers={customers} suppliers={suppliers} currentStore={currentStore} onAddSale={addSale} onAddPurchase={addPurchase} onUpdateStock={updateProduct} onUpdateCustomerDue={updateCustomerDue} onUpdateSupplierDue={updateSupplierDue} />} />
+
             <Route path="/purchases" element={<Purchases purchases={purchases} suppliers={suppliers} products={products} currentStore={currentStore} onAddPurchase={addPurchase} onUpdateStock={updateProduct} onUpdateSupplierDue={updateSupplierDue} onDeletePurchase={deletePurchase} onAddExpense={addExpense} canDelete={checkPermission('purchase_delete')} />} />
+            
+            {/* 🔴 Customers Route updated with sales={sales} */}
+            <Route path="/customers" element={<Customers customers={customers} sales={sales} currentStore={currentStore} onAddCustomer={addCustomer} onUpdateCustomer={updateCustomer} onDeleteCustomer={deleteCustomer} onAddSale={addSale} onUpdateCustomerDue={updateCustomerDue} canEdit={checkPermission('customers_edit')} canDelete={checkPermission('customers_delete')} />} />
+            
+            <Route path="/suppliers" element={<Suppliers suppliers={suppliers} currentStore={currentStore} onAddSupplier={addSupplier} onUpdateSupplier={updateSupplier} onDeleteSupplier={deleteSupplier} onAddExpense={addExpense} onUpdateSupplierDue={updateSupplierDue} canEdit={checkPermission('suppliers_edit')} canDelete={checkPermission('suppliers_delete')} />} />
             <Route path="/expenses" element={currentUser.role !== UserRole.SALESMAN ? <Expenses expenses={expenses} currentStore={currentStore} currentUser={currentUser} expenseCategories={expenseCategories} onAddExpense={addExpense} onUpdateExpense={updateExpense} onDeleteExpense={deleteExpense} onAddExpenseCategory={handleAddExpenseCategory} onRemoveExpenseCategory={handleRemoveExpenseCategory} canEdit={checkPermission('expenses_edit')} canDelete={checkPermission('expenses_delete')} /> : <Navigate to="/inventory" replace />} />
             <Route path="/wastage" element={currentUser.role !== UserRole.SALESMAN ? <Wastage products={products} currentStore={currentStore} expenses={expenses} onUpdateStock={updateProduct} onAddExpense={addExpense} onDeleteExpense={deleteExpense} canDelete={checkPermission('expenses_delete')} /> : <Navigate to="/inventory" replace />} />
             <Route path="/scanner" element={<Scanner products={products} currentStore={currentStore} onUpdate={updateProduct} onAddSale={addSale} />} />
