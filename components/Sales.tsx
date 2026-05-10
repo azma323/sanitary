@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Sale, Product, Store, User, Customer, Expense } from '../types';
 import { 
   ShoppingCart, Search, User as UserIcon, Hash, DollarSign, Trash2, X,
   ArrowRight, ScanLine, CameraOff, Check, History, LayoutDashboard,
   TrendingUp, Printer, Download, CreditCard, ChevronLeft, ChevronRight,
-  RotateCcw, AlertOctagon, Zap, ChevronDown, CheckCircle2, Keyboard, Package, FileText
+  RotateCcw, AlertOctagon, Zap, ChevronDown, CheckCircle2, Keyboard, Package, Wrench, FileText
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -55,6 +55,11 @@ const Sales: React.FC<SalesProps> = ({
   const [productSearchTerm, setProductSearchTerm] = useState('');
   const [productSearchResults, setProductSearchResults] = useState<Product[]>([]);
 
+  // 🔴 SERVICING STATES
+  const [serviceName, setServiceName] = useState('');
+  const [servicePrice, setServicePrice] = useState('');
+  const [serviceQty, setServiceQty] = useState('1');
+
   // Cart & Checkout States
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customerId, setCustomerId] = useState('');
@@ -70,6 +75,13 @@ const Sales: React.FC<SalesProps> = ({
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [selectedInvoiceForPrint, setSelectedInvoiceForPrint] = useState<string | null>(null);
 
+  const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
+  const [saleToReturn, setSaleToReturn] = useState<Sale | null>(null);
+  const [returnQty, setReturnQty] = useState(1);
+
+  // 🔴 AUTO PRINT STATES
+  const [autoPrint, setAutoPrint] = useState(true);
+
   useEffect(() => {
     if (isSessionActive && !invoiceId) {
       const year = new Date().getFullYear();
@@ -80,6 +92,7 @@ const Sales: React.FC<SalesProps> = ({
 
   useEffect(() => setCurrentPage(1), [searchTerm, filterDate]);
 
+  // Product Search Logic
   useEffect(() => {
     if (productSearchTerm.trim() === '') {
       setProductSearchResults([]);
@@ -96,6 +109,7 @@ const Sales: React.FC<SalesProps> = ({
     setProductSearchResults(results);
   }, [productSearchTerm, products, currentStore.id]);
 
+  // Customer Search Logic
   const filteredCustomers = useMemo(() => {
     const lowerTerm = customerSearchTerm.toLowerCase();
     return customers.filter(c => 
@@ -147,8 +161,16 @@ const Sales: React.FC<SalesProps> = ({
   };
 
   const processAddToCart = (product: Product) => {
+    if (product.quantity <= 0 && !product.id.startsWith('SERVICE_')) {
+        alert(`Out of Stock: ${product.name}`);
+        return;
+    }
     const existing = cart.find(c => c.product.id === product.id);
     if (existing) {
+       if (!product.id.startsWith('SERVICE_') && existing.quantity + 1 > product.quantity) {
+           alert(`Not enough stock for ${product.name}. Available: ${product.quantity}`);
+           return;
+       }
        setCart(cart.map(c => c.product.id === product.id ? {...c, quantity: c.quantity + 1} : c));
     } else {
        setCart([...cart, { 
@@ -160,6 +182,41 @@ const Sales: React.FC<SalesProps> = ({
     }
     setProductSearchTerm(''); 
     if(searchInputRef.current) searchInputRef.current.focus();
+  };
+
+  // 🔴 SERVICING ADD LOGIC
+  const handleAddService = () => {
+    if (!serviceName.trim()) return alert('Please enter a service or fee name.');
+    const price = parseFloat(servicePrice);
+    const qty = parseFloat(serviceQty);
+    
+    if (isNaN(price) || price < 0) return alert('Invalid service price.');
+    if (isNaN(qty) || qty <= 0) return alert('Invalid quantity.');
+
+    const serviceProduct: Product = {
+      id: `SERVICE_${Date.now()}`,
+      name: `[Service] ${serviceName}`,
+      sku: 'SERVICE',
+      price: price,
+      buyingPrice: 0,
+      quantity: 999999, // Infinite virtual stock for service
+      category: 'Service',
+      storeId: currentStore.id,
+      minThreshold: 0,
+      uom: 'Pcs', // Falls back to Pcs. Or any valid string from types.ts
+      lastUpdated: new Date().toISOString()
+    };
+
+    setCart([...cart, { 
+        cartId: Math.random().toString(), 
+        product: serviceProduct as any, 
+        quantity: qty, 
+        unitPrice: price 
+    }]);
+
+    setServiceName('');
+    setServicePrice('');
+    setServiceQty('1');
   };
 
   const handleProductSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -195,6 +252,99 @@ const Sales: React.FC<SalesProps> = ({
   const finalAmountPaid = isWalkIn ? cartTotalAfterDiscount : (parseFloat(amountPaid) || 0);
   const cartDue = Math.max(0, cartTotalAfterDiscount - finalAmountPaid);
 
+  // 🔴 DIRECT PRINT LOGIC (Used for both Estimate and Sales)
+  const printDirectReceipt = useCallback((invId: string, printCart: CartItem[], cName: string, fPaid: number, fDue: number, dsc: number) => {
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    
+    const cartHTML = printCart.map(item => `
+      <div class="row">
+        <span style="flex: 2;">${item.product.name}</span>
+        <span style="flex: 1; text-align: center;">${item.quantity}</span>
+        <span style="flex: 1; text-align: right;">${(item.quantity * item.unitPrice).toFixed(2)}</span>
+      </div>
+    `).join('');
+
+    const subTotal = printCart.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+
+    const isEstimate = invId.startsWith('EST-');
+
+    const receiptHTML = `
+      <html>
+        <head>
+          <title>${isEstimate ? 'Estimate' : 'Receipt'} - ${invId}</title>
+          <style>
+            @page { margin: 0; }
+            body { 
+              font-family: 'Courier New', Courier, monospace; 
+              width: 80mm; 
+              padding: 10px; 
+              color: #000; 
+              font-size: 12px; 
+              margin: 0 auto;
+            }
+            .center { text-align: center; }
+            .bold { font-weight: bold; }
+            .row { display: flex; justify-content: space-between; margin: 3px 0; }
+            .divider { border-bottom: 1px dashed #000; margin: 8px 0; }
+          </style>
+        </head>
+        <body>
+          <div class="center bold" style="font-size: 16px; margin-bottom: 5px;">${currentStore.name}</div>
+          <div class="center" style="font-size: 10px;">${currentStore.location || ''}</div>
+          <div class="center bold" style="margin-top: 5px; font-size: 14px;">${isEstimate ? 'QUOTATION / ESTIMATE' : 'SALES INVOICE'}</div>
+          <div class="divider"></div>
+          
+          <div class="row"><span>Invoice:</span> <span>${invId}</span></div>
+          <div class="row"><span>Date:</span> <span>${new Date().toLocaleString('en-US')}</span></div>
+          <div class="row"><span>Customer:</span> <span>${cName}</span></div>
+          
+          <div class="divider"></div>
+          <div class="row bold">
+            <span style="flex: 2;">Item</span>
+            <span style="flex: 1; text-align: center;">Qty</span>
+            <span style="flex: 1; text-align: right;">Total</span>
+          </div>
+          <div class="divider"></div>
+          
+          ${cartHTML}
+          
+          <div class="divider"></div>
+          
+          <div class="row"><span>Subtotal:</span> <span>${subTotal.toFixed(2)}</span></div>
+          ${dsc > 0 ? `<div class="row"><span>Discount:</span> <span>-${(subTotal * dsc / 100).toFixed(2)}</span></div>` : ''}
+          <div class="row bold" style="font-size: 14px; margin-top: 5px;">
+            <span>Net Total:</span>
+            <span>${cartTotalAfterDiscount.toFixed(2)}</span>
+          </div>
+          
+          ${!isEstimate ? `
+            <div class="row"><span>Amount Paid:</span> <span>${fPaid.toFixed(2)}</span></div>
+            <div class="row"><span>Due:</span> <span>${fDue.toFixed(2)}</span></div>
+          ` : ''}
+          
+          <div class="divider"></div>
+          <div class="center" style="font-size: 10px; margin-top: 15px;">${isEstimate ? 'This is an estimate, subject to change.' : 'Thank you for shopping with us!'}</div>
+          <div class="center" style="font-size: 9px; margin-top: 5px;">Powered by BDT Soft</div>
+        </body>
+      </html>
+    `;
+    
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(receiptHTML);
+      doc.close();
+      
+      iframe.contentWindow?.focus();
+      setTimeout(() => {
+        iframe.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(iframe), 1000);
+      }, 300);
+    }
+  }, [currentStore.name, currentStore.location, cartTotalAfterDiscount]);
+
   const handleConfirmSale = (isQuotation: boolean = false) => {
     if (cart.length === 0) return alert('Cart is empty. Please add items to sell.');
     
@@ -207,13 +357,15 @@ const Sales: React.FC<SalesProps> = ({
       }
 
       for (const item of cart) {
-          if (item.quantity > item.product.quantity) {
+          if (!item.product.id.startsWith('SERVICE_') && item.quantity > item.product.quantity) {
               return alert(`Not enough stock for ${item.product.name}. Available: ${item.product.quantity} Units.`);
           }
       }
     }
 
     let remainingPaid = isQuotation ? 0 : finalAmountPaid;
+    const finalInvoiceId = isQuotation ? `EST-${invoiceId.replace('INV-', '')}` : invoiceId;
+    const customerNameDisplay = isWalkIn ? 'Cash Sale (Walk-in)' : (customers.find(c => c.id === customerId)?.name || 'Walk-in Customer');
     
     cart.forEach(item => {
        const itemTotal = item.quantity * item.unitPrice * (1 - (discount / 100));
@@ -222,13 +374,13 @@ const Sales: React.FC<SalesProps> = ({
        if(!isQuotation) remainingPaid -= itemPaid;
 
        onAddSale({
-          invoiceId: isQuotation ? `EST-${invoiceId.replace('INV-', '')}` : invoiceId,
+          invoiceId: finalInvoiceId,
           customerId: isWalkIn ? (null as unknown as string) : customerId,
-          customerName: isWalkIn ? 'Cash Sale (Walk-in)' : (customers.find(c => c.id === customerId)?.name || 'Walk-in Customer'),
+          customerName: customerNameDisplay,
           productId: item.product.id,
           productName: item.product.name,
           quantity: item.quantity, 
-          buyingPrice: item.product.buyingPrice,
+          buyingPrice: item.product.buyingPrice, // 0 for services
           unitPrice: item.unitPrice, 
           discount: discount,
           totalPrice: itemTotal,
@@ -238,7 +390,8 @@ const Sales: React.FC<SalesProps> = ({
           storeId: currentStore.id
        });
 
-       if (!isQuotation) {
+       // 🔴 Only deduct stock if it's not an estimate and not a service
+       if (!isQuotation && !item.product.id.startsWith('SERVICE_')) {
          onUpdateStock(item.product.id, { quantity: item.product.quantity - item.quantity });
        }
     });
@@ -250,6 +403,11 @@ const Sales: React.FC<SalesProps> = ({
     setShowSuccessToast(true); 
     setTimeout(() => setShowSuccessToast(false), 2000); 
     
+    // 🔴 AUTO PRINT TRIGGER (For both Estimate and Sale)
+    if (autoPrint) {
+       printDirectReceipt(finalInvoiceId, cart, customerNameDisplay, isQuotation ? 0 : finalAmountPaid, isQuotation ? 0 : cartDue, discount);
+    }
+
     setCart([]);
     setCustomerId('');
     setCustomerSearchTerm('');
@@ -259,10 +417,68 @@ const Sales: React.FC<SalesProps> = ({
     setInvoiceId(`INV-${new Date().getFullYear()}-${String(sales.length + cart.length + 1).padStart(3, '0')}`);
   };
 
+  const getReturnableQty = (sale: Sale) => {
+    if (!sale) return 0;
+    const returns = sales.filter(s => s.invoiceId === `RET-${sale.invoiceId}` && s.productId === sale.productId);
+    return sale.quantity - returns.reduce((acc, curr) => acc + Math.abs(curr.quantity), 0);
+  };
+
+  const handleOpenReturn = (sale: Sale) => {
+    const maxQty = getReturnableQty(sale);
+    if (maxQty <= 0) return alert('All items returned.');
+    setSaleToReturn(sale); setReturnQty(1); setIsReturnModalOpen(true);
+  };
+
+  const handleReturnSubmit = (e: React.FormEvent) => {
+    e.preventDefault(); if (!saleToReturn) return;
+    const maxQty = getReturnableQty(saleToReturn);
+    if (returnQty <= 0 || returnQty > maxQty) return alert(`Invalid quantity. Max: ${maxQty}.`);
+
+    const refundAmount = returnQty * (saleToReturn.totalPrice / saleToReturn.quantity);
+    let cashRefund = 0, dueAdjustment = 0;
+
+    if (saleToReturn.customerId) {
+        const customer = customers.find(c => c.id === saleToReturn.customerId);
+        const currentDue = customer ? customer.totalDue : 0;
+        if (currentDue > 0) {
+            if (refundAmount >= currentDue) { dueAdjustment = currentDue; cashRefund = refundAmount - currentDue; } 
+            else { dueAdjustment = refundAmount; cashRefund = 0; }
+        } else cashRefund = refundAmount;
+    } else cashRefund = refundAmount; 
+
+    onAddSale({
+        invoiceId: `RET-${saleToReturn.invoiceId}`,
+        customerId: saleToReturn.customerId,
+        customerName: saleToReturn.customerName,
+        productId: saleToReturn.productId,
+        productName: `[RETURN] ${saleToReturn.productName}`,
+        quantity: -returnQty,
+        buyingPrice: saleToReturn.buyingPrice,
+        unitPrice: saleToReturn.unitPrice,
+        discount: saleToReturn.discount,
+        totalPrice: -refundAmount,
+        amountPaid: -cashRefund,
+        amountDue: -dueAdjustment,
+        paymentMethod: saleToReturn.paymentMethod,
+        storeId: currentStore.id
+    });
+
+    const product = products.find(p => p.id === saleToReturn.productId);
+    // Only restore stock if it wasn't a service
+    if (product && !saleToReturn.productId.startsWith('SERVICE_')) {
+       onUpdateStock(product.id, { quantity: product.quantity + returnQty });
+    }
+    if (dueAdjustment > 0 && saleToReturn.customerId) onUpdateCustomerDue(saleToReturn.customerId, -dueAdjustment);
+
+    alert(`Return processed!\nRestored: +${returnQty}\nDue Adjusted: $${dueAdjustment.toFixed(2)}\nCash Refund: $${cashRefund.toFixed(2)}`);
+    setIsReturnModalOpen(false); setSaleToReturn(null);
+  };
+
   const handleRemoveFromLedger = (saleToRemove: Sale) => {
     if (!saleToRemove.invoiceId.startsWith('EST-')) {
       const product = products.find(p => p.id === saleToRemove.productId);
-      if (product) {
+      // Only restore stock if it wasn't a service
+      if (product && !saleToRemove.productId.startsWith('SERVICE_')) {
         onUpdateStock(product.id, { quantity: product.quantity + saleToRemove.quantity });
       }
       if (saleToRemove.customerId && saleToRemove.amountDue > 0) {
@@ -316,7 +532,7 @@ const Sales: React.FC<SalesProps> = ({
   }, [sales, products, expenses, currentStore.id]);
 
   const exportToCSV = () => {
-    const headers = ['Invoice', 'Customer', 'Product', 'Qty', 'Unit Price', 'Discount', 'Total', 'Paid', 'Due', 'Payment Method', 'Date'];
+    const headers = ['Invoice', 'Customer', 'Product/Service', 'Qty', 'Unit Price', 'Discount', 'Total', 'Paid', 'Due', 'Payment Method', 'Date'];
     const data = sales
       .filter(s => s.storeId === currentStore.id)
       .map(saleRecord => {
@@ -439,8 +655,8 @@ const Sales: React.FC<SalesProps> = ({
                 <tr className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800 bg-slate-900/80">
                   <th className="px-6 py-5">Date</th>
                   <th className="px-6 py-5">Invoice & Customer</th>
-                  <th className="px-6 py-5">Product Issued</th>
-                  <th className="px-6 py-5 text-center">Qty</th>
+                  <th className="px-6 py-5">Item Issued</th>
+                  <th className="px-6 py-5 text-center">Qty / SqFt</th>
                   <th className="px-6 py-5 text-right">Settlement</th>
                   <th className="px-6 py-5 text-right">Actions</th>
                 </tr>
@@ -451,6 +667,7 @@ const Sales: React.FC<SalesProps> = ({
                   const isVoid = saleRecord.invoiceId?.startsWith('VOID-');
                   const isReturn = saleRecord.invoiceId?.startsWith('RET-');
                   const isEstimate = saleRecord.invoiceId?.startsWith('EST-');
+                  const isService = saleRecord.productId?.startsWith('SERVICE_');
 
                   return (
                     <tr key={saleRecord.id} className={`group hover:bg-slate-800/40 transition-all ${isVoid ? 'opacity-50 grayscale' : ''} ${isReturn ? 'bg-orange-500/5 hover:bg-orange-500/10' : ''}`}>
@@ -465,7 +682,10 @@ const Sales: React.FC<SalesProps> = ({
                         <p className="text-xs text-slate-400 font-bold">{saleRecord.customerName}</p>
                       </td>
                       <td className="px-6 py-5 text-sm text-slate-300 flex flex-col">
-                        {isPayment ? <span className="text-blue-400 italic font-bold">Due Collection</span> : isReturn ? <span className="text-orange-400 italic font-bold">{saleRecord.productName}</span> : saleRecord.productName}
+                        {isPayment ? <span className="text-blue-400 italic font-bold">Due Collection</span> : 
+                         isReturn ? <span className="text-orange-400 italic font-bold">{saleRecord.productName}</span> : 
+                         isService ? <span className="text-blue-400 font-bold">{saleRecord.productName}</span> :
+                         saleRecord.productName}
                         {saleRecord.paymentMethod && !isEstimate && <span className="text-[9px] uppercase tracking-widest text-emerald-400 font-black mt-1">[{saleRecord.paymentMethod}]</span>}
                       </td>
                       <td className="px-6 py-5 text-center font-black text-white text-sm">{isPayment ? '-' : (isVoid ? '0' : saleRecord.quantity)}</td>
@@ -515,10 +735,10 @@ const Sales: React.FC<SalesProps> = ({
 
         <AnimatePresence>
           {showPrintModal && selectedInvoiceForPrint && (
-            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 no-print">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowPrintModal(false)} className="absolute inset-0 bg-slate-950/90 backdrop-blur-md" />
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowPrintModal(false)} className="absolute inset-0 bg-slate-950/90 backdrop-blur-md no-print" />
               <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-2xl bg-white text-slate-950 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50 no-print">
                   <h3 className="font-black uppercase tracking-widest text-xs text-slate-500">
                     {selectedInvoiceForPrint.startsWith('EST-') ? 'Estimate Preview' : 'Invoice Preview'}
                   </h3>
@@ -556,7 +776,7 @@ const Sales: React.FC<SalesProps> = ({
                   <table className="w-full mb-12">
                     <thead>
                       <tr className="border-b-2 border-slate-950 text-[10px] font-black uppercase tracking-widest">
-                        <th className="py-4 text-left">Description</th><th className="py-4 text-center">Qty</th><th className="py-4 text-right">Unit Price</th><th className="py-4 text-right">Total</th>
+                        <th className="py-4 text-left">Description</th><th className="py-4 text-center">Qty / SqFt</th><th className="py-4 text-right">Unit Price</th><th className="py-4 text-right">Total</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -593,10 +813,25 @@ const Sales: React.FC<SalesProps> = ({
         </AnimatePresence>
 
         <style>{`
+          /* PERFECT PRINT CSS FIX */
           @media print {
-            .no-print { display: none !important; }
-            .print-only { display: block !important; }
-            body { background: white !important; color: black !important; }
+            body * {
+              visibility: hidden;
+            }
+            #printable-invoice, #printable-invoice * {
+              visibility: visible;
+              color: #000 !important;
+            }
+            #printable-invoice {
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 100%;
+              padding: 20px;
+            }
+            .no-print {
+              display: none !important;
+            }
           }
         `}</style>
       </div>
@@ -613,6 +848,15 @@ const Sales: React.FC<SalesProps> = ({
             <h2 className="text-xl font-black text-white tracking-tight uppercase">Product Search</h2>
             <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Scan or Type Name</p>
           </div>
+          {/* Auto Print Toggle Button */}
+          <button 
+            onClick={() => setAutoPrint(!autoPrint)}
+            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center border ${autoPrint ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-400' : 'bg-slate-800 border-slate-700 text-slate-500'}`}
+            title={autoPrint ? 'Auto Print is ON' : 'Auto Print is OFF'}
+          >
+            <Printer className="w-4 h-4 mr-1.5" />
+            {autoPrint ? 'Auto-Print' : 'Print OFF'}
+          </button>
         </div>
 
         {showSuccessToast && (
@@ -687,10 +931,35 @@ const Sales: React.FC<SalesProps> = ({
             </div>
           )}
 
-          <div className="mt-8 pt-8 border-t border-slate-800 text-center opacity-30 select-none">
-             <Package className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-             <p className="text-xs font-bold text-slate-400">Search products by name or SKU. Click an item from the dropdown to add it directly to the cart.</p>
+          <div className="mt-4 pt-6 border-t border-slate-800 text-center opacity-40 select-none">
+             <Package className="w-10 h-10 mx-auto mb-2 text-slate-600" />
+             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Select physical products above</p>
           </div>
+
+          {/* SERVICING MODULE */}
+          <div className="mt-4">
+            <h3 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+              <Wrench className="w-4 h-4" /> Add Service / Labor Charge
+            </h3>
+            <div className="space-y-3 bg-blue-500/5 p-4 rounded-2xl border border-blue-500/20">
+              <div className="space-y-1">
+                 <input type="text" value={serviceName} onChange={e => setServiceName(e.target.value)} placeholder="e.g., Pipe Fitting, Labor..." className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-3 text-sm focus:border-blue-400 outline-none transition-colors" />
+              </div>
+              <div className="flex gap-3">
+                 <div className="flex-1 space-y-1">
+                   <input type="number" step="0.01" value={servicePrice} onChange={e => setServicePrice(e.target.value)} placeholder="Charge Amount ($)" className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-3 text-sm focus:border-blue-400 outline-none transition-colors" />
+                 </div>
+                 <div className="w-20 space-y-1">
+                   <input type="number" step="0.01" min="0.01" value={serviceQty} onChange={e => setServiceQty(e.target.value)} className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-3 text-sm text-center focus:border-blue-400 outline-none transition-colors" title="Quantity" />
+                 </div>
+              </div>
+              <button type="button" onClick={handleAddService} className="w-full py-3 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 hover:text-white transition-all shadow-lg">
+                + Add Service to Bill
+              </button>
+            </div>
+          </div>
+          {/* END SERVICING MODULE */}
+
         </div>
       </div>
 
@@ -711,7 +980,7 @@ const Sales: React.FC<SalesProps> = ({
            <table className="w-full text-left">
               <thead className="sticky top-0 bg-slate-900 z-10">
                 <tr className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800">
-                  <th className="px-6 py-4">Product Details</th>
+                  <th className="px-6 py-4">Item Details</th>
                   <th className="px-4 py-4 text-center">Qty / SqFt</th>
                   <th className="px-4 py-4 text-right">Unit Price</th>
                   <th className="px-4 py-4 text-right">Total</th>
@@ -719,11 +988,14 @@ const Sales: React.FC<SalesProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50">
-                {cart.map((cartItem) => (
+                {cart.map((cartItem) => {
+                    const isService = cartItem.product.id.startsWith('SERVICE_');
+                    return (
                     <tr key={cartItem.cartId} className="group hover:bg-slate-800/40 transition-all animate-in slide-in-from-right-4 duration-300">
                       <td className="px-6 py-4">
-                         <p className="font-bold text-white text-sm truncate max-w-[200px]">{cartItem.product.name}</p>
-                         <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter italic">Stock: {cartItem.product.quantity}</p>
+                         <p className={`font-bold text-sm truncate max-w-[200px] ${isService ? 'text-blue-400' : 'text-white'}`}>{cartItem.product.name}</p>
+                         {!isService && <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter italic">Stock: {cartItem.product.quantity}</p>}
+                         {isService && <p className="text-[9px] text-blue-500/70 font-black uppercase tracking-widest italic mt-0.5">Non-Inventory Item</p>}
                       </td>
                       <td className="px-4 py-4 text-center">
                          <input 
@@ -734,7 +1006,7 @@ const Sales: React.FC<SalesProps> = ({
                            onWheel={(e) => (e.target as HTMLInputElement).blur()} 
                            onFocus={e => e.target.select()} 
                            onChange={(e) => handleCartQtyChange(cartItem.cartId, parseFloat(e.target.value))} 
-                           className="w-20 bg-slate-800 border border-slate-700 rounded-xl text-center font-black text-amber-400 text-sm focus:border-amber-400 outline-none p-1.5 shadow-inner" 
+                           className={`w-20 bg-slate-800 border border-slate-700 rounded-xl text-center font-black text-sm outline-none p-1.5 shadow-inner ${isService ? 'text-blue-400 focus:border-blue-400' : 'text-amber-400 focus:border-amber-400'}`} 
                          />
                       </td>
                       <td className="px-4 py-4 text-right">
@@ -762,7 +1034,7 @@ const Sales: React.FC<SalesProps> = ({
                          </button>
                       </td>
                     </tr>
-                ))}
+                )})}
                 {cart.length === 0 && (
                   <tr>
                     <td colSpan={5} className="px-6 py-20 text-center opacity-30 grayscale">

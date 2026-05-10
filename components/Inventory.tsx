@@ -704,6 +704,9 @@ const Inventory: React.FC<InventoryProps> = ({
                       <option value="SqFt">Square Feet (SqFt)</option>
                       <option value="Pcs">Pieces (Pcs)</option>
                       <option value="Rft">Running Feet (Rft)</option>
+                      <option value="Ton">Ton</option>
+                      <option value="KG">KG</option>
+                      <option value="Meter">Meter</option>
                     </select>
                   </div>
                   <div className="space-y-2">
